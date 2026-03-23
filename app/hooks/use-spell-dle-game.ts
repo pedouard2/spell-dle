@@ -84,51 +84,37 @@ export function useSpellDleGame() {
       setCurrentMisspellings([]);
       setWordData(null);
 
+      let word: string;
       try {
-        let word = await getTargetWord(difficulty, mode, signal);
+        word = await getTargetWord(difficulty, mode, signal);
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
         if (!isCurrentRequest()) return;
-        if (!word) {
-          setErrorMsg('No words generated.');
-          setStatus('error');
-          return;
-        }
+        console.error(err);
+        setErrorMsg('Unable to load a word right now. Please check your connection and try again.');
+        setStatus('error');
+        return;
+      }
 
-        let retries = 0;
-        let res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`, { signal });
+      if (!isCurrentRequest()) return;
+      setTargetWord(word);
 
-        while (res.status === 404 && retries < 3) {
-          retries += 1;
-          word = await getTargetWord(difficulty, mode, signal);
-          if (!isCurrentRequest()) return;
-          if (!word) {
-            setErrorMsg('No words generated.');
-            setStatus('error');
-            return;
-          }
-          res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`, { signal });
-          if (!isCurrentRequest()) return;
-        }
-
+      try {
+        const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${word}`, { signal });
         if (!isCurrentRequest()) return;
-        if (res.status === 404) {
-          throw new Error('Could not find a valid dictionary word after 3 attempts.');
-        }
-        if (!res.ok) {
-          throw new Error('Failed to fetch definition');
-        }
+        if (res.status === 404) throw new Error('Dictionary did not contain the selected word.');
+        if (!res.ok) throw new Error('Failed to fetch definition');
 
         const data = (await res.json()) as DictionaryEntry[];
         if (!isCurrentRequest()) return;
         const entry = data[0];
         const audioEntry = entry?.phonetics?.find((item) => Boolean(item.audio))?.audio ?? null;
 
-        setTargetWord(word);
         setWordData({
           audioUrl: audioEntry,
           definition: entry?.meanings?.[0]?.definitions?.[0]?.definition ?? 'Definition unavailable',
           phonetic: entry?.phonetic ?? '',
         });
-        setStatus('playing');
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         if (!isCurrentRequest()) return;
@@ -139,8 +125,9 @@ export function useSpellDleGame() {
           definition: 'Definition unavailable (Offline Mode)',
           phonetic: '',
         });
-        setStatus('playing');
       }
+
+      setStatus('playing');
     },
     [difficulty, mode],
   );
