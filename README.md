@@ -1,36 +1,57 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Spell-DLE
 
-## Getting Started
+Spell-DLE is a Next.js spelling game where players hear a word, read a definition clue, and type the correct spelling.
 
-First, run the development server:
+## Features
+
+- `Daily` mode: deterministic easy -> medium -> hard sequence.
+- `Infinite` mode: unlimited rounds at the selected difficulty.
+- Pronunciation from dictionary audio when available, with speech-synthesis fallback.
+- Misspelling history with edit-distance feedback at end-of-run.
+
+## Tech Stack
+
+- Next.js `App Router` + React + TypeScript
+- Tailwind CSS (v4)
+- Datamuse API (infinite word generation)
+- DictionaryAPI (definitions and pronunciation audio)
+
+## Local Development
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Scripts
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `npm run dev`: start local dev server.
+- `npm run lint`: run ESLint checks.
+- `npm run test`: run unit tests with Vitest.
+- `npm run test:watch`: run Vitest in watch mode.
+- `npm run build`: production build.
+- `npm run start`: serve production build.
 
-## Learn More
+## Project Structure
 
-To learn more about Next.js, take a look at the following resources:
+- `app/page.tsx`: game loop, UI, mode/difficulty flow.
+- `app/utils/game-logic.ts`: daily seed logic and infinite API word selection.
+- `app/utils/game-logic.test.ts`: unit coverage for core word-selection behavior.
+- `app/globals.css`: global styles and animation tokens.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Testing Focus
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Current baseline tests cover:
 
-## Deploy on Vercel
+- deterministic daily selection behavior
+- difficulty rank-band selection
+- infinite-mode API success path
+- infinite-mode fallback path
+- cancellation behavior (`AbortError`) propagation
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Notes
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- No secrets are required for local usage.
+- App remains playable when external API calls fail (offline/fallback definition mode).
