@@ -83,7 +83,11 @@ export function useSpellDleGame() {
         if (err instanceof DOMException && err.name === 'AbortError') return;
         if (!isCurrentRequest()) return;
         console.error(err);
-        setErrorMsg('Unable to load a word right now. Please check your connection and try again.');
+        setErrorMsg(
+          err instanceof Error
+            ? err.message
+            : 'Unable to load a word right now. Please check your connection and try again.',
+        );
         setStatus('error');
         return;
       }

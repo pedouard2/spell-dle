@@ -31,10 +31,11 @@ interface CandidateWord {
 
 const DAILY_API_VERSION = 'daily-v3';
 const DATAMUSE_MAX_RESULTS = 100;
-const WORD_FETCH_ATTEMPTS = 6;
-const MAX_DICTIONARY_CHECKS_PER_ATTEMPT = 12;
+const WORD_FETCH_ATTEMPTS = 8;
+const MAX_DICTIONARY_CHECKS_PER_ATTEMPT = 4;
 const MIN_WORD_LENGTH = 4;
 const MAX_WORD_LENGTH = 15;
+const dictionaryCache = new Map<string, TargetWordData | null>();
 
 const parseFrequency = (tags?: string[]) => {
   if (!Array.isArray(tags)) return null;
@@ -73,22 +74,25 @@ const selectDifficultyBand = (candidates: CandidateWord[], difficulty: Difficult
   const sorted = [...candidates].sort((a, b) => b.frequency - a.frequency);
   if (sorted.length === 0) return [];
 
-  const bandSize = Math.max(1, Math.floor(sorted.length / 3));
-  if (difficulty === 'easy') {
-    return sorted.slice(0, bandSize);
-  }
-  if (difficulty === 'medium') {
-    const start = bandSize;
-    const end = Math.max(start + 1, bandSize * 2);
-    return sorted.slice(start, end);
-  }
-  return sorted.slice(Math.max(sorted.length - bandSize, 0));
+  const n = sorted.length;
+  const easyEnd = Math.max(1, Math.ceil(n / 3));
+  const mediumStart = Math.floor(n / 3);
+  const mediumEnd = Math.max(mediumStart + 1, Math.ceil((2 * n) / 3));
+  const hardStart = Math.max(0, Math.floor((2 * n) / 3));
+
+  const easyBand = sorted.slice(0, easyEnd);
+  const mediumBand = sorted.slice(mediumStart, mediumEnd);
+  const hardBand = sorted.slice(hardStart);
+
+  if (difficulty === 'easy') return easyBand.length > 0 ? easyBand : sorted;
+  if (difficulty === 'medium') return mediumBand.length > 0 ? mediumBand : sorted;
+  return hardBand.length > 0 ? hardBand : sorted;
 };
 
 const getSeededPattern = (seed: string) => {
   const rng = seedrandom(seed);
   const alphabet = 'abcdefghijklmnopqrstuvwxyz';
-  const prefixLength = 2;
+  const prefixLength = rng() < 0.35 ? 2 : 1;
   let prefix = '';
 
   for (let i = 0; i < prefixLength; i++) {
@@ -100,7 +104,7 @@ const getSeededPattern = (seed: string) => {
 
 const getRandomPattern = () => {
   const alphabet = 'abcdefghijklmnopqrstuvwxyz';
-  const prefixLength = Math.random() < 0.5 ? 1 : 2;
+  const prefixLength = Math.random() < 0.25 ? 2 : 1;
   let prefix = '';
 
   for (let i = 0; i < prefixLength; i++) {
@@ -128,10 +132,17 @@ const fetchDictionaryWord = async (
   word: string,
   signal?: AbortSignal,
 ): Promise<TargetWordData | null> => {
+  if (dictionaryCache.has(word)) {
+    return dictionaryCache.get(word) ?? null;
+  }
+
   const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, {
     signal,
   });
-  if (res.status === 404) return null;
+  if (res.status === 404) {
+    dictionaryCache.set(word, null);
+    return null;
+  }
   if (!res.ok) {
     throw new Error(`Dictionary request failed with status ${res.status}.`);
   }
@@ -139,16 +150,21 @@ const fetchDictionaryWord = async (
   const data = (await res.json()) as DictionaryEntry[];
   const entry = data[0];
   const definition = entry?.meanings?.[0]?.definitions?.[0]?.definition?.trim();
-  if (!definition) return null;
+  if (!definition) {
+    dictionaryCache.set(word, null);
+    return null;
+  }
 
   const audioUrl = entry?.phonetics?.find((item) => Boolean(item.audio))?.audio ?? null;
 
-  return {
+  const result = {
     word,
     definition,
     phonetic: entry?.phonetic ?? '',
     audioUrl,
   };
+  dictionaryCache.set(word, result);
+  return result;
 };
 
 const chooseDictionaryBackedWord = async (
@@ -169,7 +185,10 @@ const getDailyWord = async (difficulty: Difficulty, signal?: AbortSignal) => {
   const seedBase = `${DAILY_API_VERSION}-${difficulty}-${daysSinceEpoch}`;
 
   for (let attempt = 0; attempt < WORD_FETCH_ATTEMPTS; attempt++) {
-    const pattern = getSeededPattern(`${seedBase}-pattern-${attempt}`);
+    const pattern =
+      attempt === WORD_FETCH_ATTEMPTS - 1
+        ? '*'
+        : getSeededPattern(`${seedBase}-pattern-${attempt}`);
     const candidates = await fetchDatamuseCandidates(pattern, signal);
     const band = selectDifficultyBand(candidates, difficulty);
     const dailyWord = await chooseDictionaryBackedWord(
@@ -185,7 +204,7 @@ const getDailyWord = async (difficulty: Difficulty, signal?: AbortSignal) => {
 
 const getInfiniteWord = async (difficulty: Difficulty, signal?: AbortSignal) => {
   for (let attempt = 0; attempt < WORD_FETCH_ATTEMPTS; attempt++) {
-    const pattern = getRandomPattern();
+    const pattern = attempt >= WORD_FETCH_ATTEMPTS - 2 ? '*' : getRandomPattern();
     const candidates = await fetchDatamuseCandidates(pattern, signal);
     const band = selectDifficultyBand(candidates, difficulty);
     const infiniteWord = await chooseDictionaryBackedWord(band, Math.random, signal);
