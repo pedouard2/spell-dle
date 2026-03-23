@@ -17,6 +17,10 @@ export const STATIC_WORD_DATABASE = [
 export type Difficulty = 'easy' | 'medium' | 'hard';
 export type GameMode = 'daily' | 'infinite';
 
+interface DatamuseWord {
+  word: string;
+}
+
 const getDifficultyParams = (diff: Difficulty) => {
   // Config for Datamuse API
   // sp = spelling pattern (? = wildcards)
@@ -41,20 +45,28 @@ const getRandomPattern = (min: number, max: number) => {
 };
 
 // New Async Function to get word from API
-async function fetchInfiniteWord(difficulty: Difficulty): Promise<string | null> {
+async function fetchInfiniteWord(
+  difficulty: Difficulty,
+  signal?: AbortSignal,
+): Promise<string | null> {
   const { minLen, maxLen } = getDifficultyParams(difficulty);
   const pattern = getRandomPattern(minLen, maxLen);
   
   try {
     // datamuse api: sp = spelling pattern, max = 20 results, md=f (frequency metadata)
-    const res = await fetch(`https://api.datamuse.com/words?sp=${pattern}&max=20&md=f`);
+    const res = await fetch(
+      `https://api.datamuse.com/words?sp=${pattern}&max=20&md=f`,
+      { signal },
+    );
     if (!res.ok) throw new Error('API Failed');
     
-    const data = await res.json();
-    if (!data || data.length === 0) return null;
+    const data = (await res.json()) as DatamuseWord[];
+    if (!Array.isArray(data) || data.length === 0) return null;
 
     // Filter out words that contain spaces or hyphens
-    const cleanWords = data.filter((item: any) => /^[a-zA-Z]+$/.test(item.word));
+    const cleanWords = data.filter(
+      (item) => typeof item.word === 'string' && /^[a-zA-Z]+$/.test(item.word),
+    );
     
     if (cleanWords.length === 0) return null;
 
@@ -62,13 +74,20 @@ async function fetchInfiniteWord(difficulty: Difficulty): Promise<string | null>
     const randomIndex = Math.floor(Math.random() * cleanWords.length);
     return cleanWords[randomIndex].word;
   } catch (e) {
+    if (signal?.aborted || (e instanceof DOMException && e.name === 'AbortError')) {
+      throw e;
+    }
     console.error("API Error, using fallback", e);
     return null;
   }
 }
 
 // Updated Main Function (Now Async)
-export const getTargetWord = async (difficulty: Difficulty, mode: GameMode): Promise<string> => {
+export const getTargetWord = async (
+  difficulty: Difficulty,
+  mode: GameMode,
+  signal?: AbortSignal,
+): Promise<string> => {
   
   // 1. DAILY MODE (Keep Static/Seeded)
   if (mode === 'daily') {
@@ -88,7 +107,7 @@ export const getTargetWord = async (difficulty: Difficulty, mode: GameMode): Pro
   }
 
   // 2. INFINITE MODE (API)
-  const apiWord = await fetchInfiniteWord(difficulty);
+  const apiWord = await fetchInfiniteWord(difficulty, signal);
   if (apiWord) return apiWord;
 
   // 3. FALLBACK (If API fails)
