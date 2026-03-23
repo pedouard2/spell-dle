@@ -4,146 +4,204 @@ import { differenceInDays } from 'date-fns';
 export type Difficulty = 'easy' | 'medium' | 'hard';
 export type GameMode = 'daily' | 'infinite';
 
-interface DatamuseWord {
+export interface TargetWordData {
   word: string;
+  definition: string;
+  phonetic: string;
+  audioUrl: string | null;
 }
 
-const DAILY_API_VERSION = 'daily-v2';
-const DATAMUSE_MAX_RESULTS = 100;
-const DATAMUSE_DAILY_ATTEMPTS = 5;
-const DATAMUSE_INFINITE_ATTEMPTS = 5;
+interface DatamuseWord {
+  word?: string;
+  tags?: string[];
+}
 
-const getDifficultyParams = (diff: Difficulty) => {
-  switch (diff) {
-    case 'easy':
-      return { minLen: 4, maxLen: 6 };
-    case 'medium':
-      return { minLen: 7, maxLen: 10 };
-    case 'hard':
-      return { minLen: 11, maxLen: 15 };
-  }
+interface DictionaryEntry {
+  phonetic?: string;
+  phonetics?: Array<{ audio?: string }>;
+  meanings?: Array<{
+    definitions?: Array<{ definition?: string }>;
+  }>;
+}
+
+interface CandidateWord {
+  word: string;
+  frequency: number;
+}
+
+const DAILY_API_VERSION = 'daily-v3';
+const DATAMUSE_MAX_RESULTS = 100;
+const WORD_FETCH_ATTEMPTS = 6;
+const MAX_DICTIONARY_CHECKS_PER_ATTEMPT = 12;
+const MIN_WORD_LENGTH = 4;
+const MAX_WORD_LENGTH = 15;
+
+const parseFrequency = (tags?: string[]) => {
+  if (!Array.isArray(tags)) return null;
+  const freqTag = tags.find((tag) => tag.startsWith('f:'));
+  if (!freqTag) return null;
+  const value = Number(freqTag.slice(2));
+  return Number.isFinite(value) ? value : null;
 };
 
-const extractCleanWords = (
-  data: DatamuseWord[],
-  minLen: number,
-  maxLen: number,
-) => {
+const extractCandidates = (data: DatamuseWord[]) => {
   return data
-    .map((item) => item.word)
+    .map((item) => {
+      const word = item.word?.toLowerCase() ?? '';
+      const frequency = parseFrequency(item.tags);
+      return { word, frequency };
+    })
     .filter(
-      (word) =>
-        typeof word === 'string' &&
-        /^[a-zA-Z]+$/.test(word) &&
-        word.length >= minLen &&
-        word.length <= maxLen,
+      (item): item is CandidateWord =>
+        item.word.length >= MIN_WORD_LENGTH &&
+        item.word.length <= MAX_WORD_LENGTH &&
+        /^[a-z]+$/.test(item.word) &&
+        item.frequency !== null,
     );
 };
 
-const getRandomPattern = (min: number, max: number) => {
-  const length = Math.floor(Math.random() * (max - min + 1)) + min;
-  const alphabet = 'abcdefghijklmnopqrstuvwxyz';
-  const startChar = alphabet[Math.floor(Math.random() * alphabet.length)];
-  return startChar + '?'.repeat(length - 1);
+const shuffleWithRng = <T,>(list: T[], rng: () => number) => {
+  const shuffled = [...list];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
 };
 
-const getPatternFromSeed = (difficulty: Difficulty, seed: string) => {
-  const { minLen, maxLen } = getDifficultyParams(difficulty);
-  const rng = seedrandom(seed);
-  const length = Math.floor(rng() * (maxLen - minLen + 1)) + minLen;
-  const alphabet = 'abcdefghijklmnopqrstuvwxyz';
-  const prefixLength = difficulty === 'easy' ? 1 : 2;
+const selectDifficultyBand = (candidates: CandidateWord[], difficulty: Difficulty) => {
+  const sorted = [...candidates].sort((a, b) => b.frequency - a.frequency);
+  if (sorted.length === 0) return [];
 
+  const bandSize = Math.max(1, Math.floor(sorted.length / 3));
+  if (difficulty === 'easy') {
+    return sorted.slice(0, bandSize);
+  }
+  if (difficulty === 'medium') {
+    const start = bandSize;
+    const end = Math.max(start + 1, bandSize * 2);
+    return sorted.slice(start, end);
+  }
+  return sorted.slice(Math.max(sorted.length - bandSize, 0));
+};
+
+const getSeededPattern = (seed: string) => {
+  const rng = seedrandom(seed);
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz';
+  const prefixLength = 2;
   let prefix = '';
+
   for (let i = 0; i < prefixLength; i++) {
     prefix += alphabet[Math.floor(rng() * alphabet.length)];
   }
 
-  return prefix + '?'.repeat(Math.max(0, length - prefixLength));
+  return `${prefix}*`;
 };
 
-async function fetchSeededDailyWord(
-  difficulty: Difficulty,
-  seedBase: string,
-  signal?: AbortSignal,
-): Promise<string | null> {
-  const { minLen, maxLen } = getDifficultyParams(difficulty);
+const getRandomPattern = () => {
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz';
+  const prefixLength = Math.random() < 0.5 ? 1 : 2;
+  let prefix = '';
 
-  for (let attempt = 0; attempt < DATAMUSE_DAILY_ATTEMPTS; attempt++) {
-    const pattern = getPatternFromSeed(difficulty, `${seedBase}-pattern-${attempt}`);
-
-    try {
-      const res = await fetch(
-        `https://api.datamuse.com/words?sp=${pattern}&max=${DATAMUSE_MAX_RESULTS}&md=f`,
-        { signal },
-      );
-      if (!res.ok) throw new Error('Daily API failed');
-
-      const data = (await res.json()) as DatamuseWord[];
-      const cleanWords = extractCleanWords(data, minLen, maxLen);
-      if (cleanWords.length === 0) continue;
-
-      const pickRng = seedrandom(`${seedBase}-pick-${attempt}`);
-      const index = Math.floor(pickRng() * cleanWords.length);
-      return cleanWords[index];
-    } catch (e) {
-      if (signal?.aborted || (e instanceof DOMException && e.name === 'AbortError')) {
-        throw e;
-      }
-    }
+  for (let i = 0; i < prefixLength; i++) {
+    prefix += alphabet[Math.floor(Math.random() * alphabet.length)];
   }
 
-  return null;
-}
+  return `${prefix}*`;
+};
 
-async function fetchInfiniteWord(
-  difficulty: Difficulty,
-  signal?: AbortSignal,
-): Promise<string | null> {
-  const { minLen, maxLen } = getDifficultyParams(difficulty);
-
-  for (let attempt = 0; attempt < DATAMUSE_INFINITE_ATTEMPTS; attempt++) {
-    const pattern = getRandomPattern(minLen, maxLen);
-
-    try {
-      const res = await fetch(
-        `https://api.datamuse.com/words?sp=${pattern}&max=20&md=f`,
-        { signal },
-      );
-      if (!res.ok) throw new Error('Infinite API failed');
-
-      const data = (await res.json()) as DatamuseWord[];
-      if (!Array.isArray(data) || data.length === 0) continue;
-
-      const cleanWords = extractCleanWords(data, minLen, maxLen);
-      if (cleanWords.length === 0) continue;
-
-      const randomIndex = Math.floor(Math.random() * cleanWords.length);
-      return cleanWords[randomIndex];
-    } catch (e) {
-      if (signal?.aborted || (e instanceof DOMException && e.name === 'AbortError')) {
-        throw e;
-      }
-    }
+const fetchDatamuseCandidates = async (pattern: string, signal?: AbortSignal) => {
+  const res = await fetch(
+    `https://api.datamuse.com/words?sp=${pattern}&max=${DATAMUSE_MAX_RESULTS}&md=f`,
+    { signal },
+  );
+  if (!res.ok) {
+    throw new Error(`Datamuse request failed with status ${res.status}.`);
   }
 
+  const data = (await res.json()) as DatamuseWord[];
+  if (!Array.isArray(data)) return [];
+  return extractCandidates(data);
+};
+
+const fetchDictionaryWord = async (
+  word: string,
+  signal?: AbortSignal,
+): Promise<TargetWordData | null> => {
+  const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, {
+    signal,
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`Dictionary request failed with status ${res.status}.`);
+  }
+
+  const data = (await res.json()) as DictionaryEntry[];
+  const entry = data[0];
+  const definition = entry?.meanings?.[0]?.definitions?.[0]?.definition?.trim();
+  if (!definition) return null;
+
+  const audioUrl = entry?.phonetics?.find((item) => Boolean(item.audio))?.audio ?? null;
+
+  return {
+    word,
+    definition,
+    phonetic: entry?.phonetic ?? '',
+    audioUrl,
+  };
+};
+
+const chooseDictionaryBackedWord = async (
+  candidates: CandidateWord[],
+  rng: () => number,
+  signal?: AbortSignal,
+) => {
+  const shuffled = shuffleWithRng(candidates, rng).slice(0, MAX_DICTIONARY_CHECKS_PER_ATTEMPT);
+  for (const candidate of shuffled) {
+    const dictionaryWord = await fetchDictionaryWord(candidate.word, signal);
+    if (dictionaryWord) return dictionaryWord;
+  }
   return null;
-}
+};
+
+const getDailyWord = async (difficulty: Difficulty, signal?: AbortSignal) => {
+  const daysSinceEpoch = differenceInDays(new Date(), new Date(1970, 0, 1));
+  const seedBase = `${DAILY_API_VERSION}-${difficulty}-${daysSinceEpoch}`;
+
+  for (let attempt = 0; attempt < WORD_FETCH_ATTEMPTS; attempt++) {
+    const pattern = getSeededPattern(`${seedBase}-pattern-${attempt}`);
+    const candidates = await fetchDatamuseCandidates(pattern, signal);
+    const band = selectDifficultyBand(candidates, difficulty);
+    const dailyWord = await chooseDictionaryBackedWord(
+      band,
+      seedrandom(`${seedBase}-pick-${attempt}`),
+      signal,
+    );
+    if (dailyWord) return dailyWord;
+  }
+
+  throw new Error('Unable to fetch a daily dictionary-backed word.');
+};
+
+const getInfiniteWord = async (difficulty: Difficulty, signal?: AbortSignal) => {
+  for (let attempt = 0; attempt < WORD_FETCH_ATTEMPTS; attempt++) {
+    const pattern = getRandomPattern();
+    const candidates = await fetchDatamuseCandidates(pattern, signal);
+    const band = selectDifficultyBand(candidates, difficulty);
+    const infiniteWord = await chooseDictionaryBackedWord(band, Math.random, signal);
+    if (infiniteWord) return infiniteWord;
+  }
+
+  throw new Error('Unable to fetch an infinite dictionary-backed word.');
+};
 
 export const getTargetWord = async (
   difficulty: Difficulty,
   mode: GameMode,
   signal?: AbortSignal,
-): Promise<string> => {
+): Promise<TargetWordData> => {
   if (mode === 'daily') {
-    const daysSinceEpoch = differenceInDays(new Date(), new Date(1970, 0, 1));
-    const dailySeed = `${DAILY_API_VERSION}-${difficulty}-${daysSinceEpoch}`;
-    const dailyApiWord = await fetchSeededDailyWord(difficulty, dailySeed, signal);
-    if (dailyApiWord) return dailyApiWord;
-    throw new Error('Unable to fetch a daily word from Datamuse.');
+    return getDailyWord(difficulty, signal);
   }
-
-  const apiWord = await fetchInfiniteWord(difficulty, signal);
-  if (apiWord) return apiWord;
-  throw new Error('Unable to fetch an infinite word from Datamuse.');
+  return getInfiniteWord(difficulty, signal);
 };

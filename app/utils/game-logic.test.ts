@@ -1,65 +1,123 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getTargetWord } from './game-logic';
 
+const jsonResponse = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
-describe('getTargetWord (daily mode)', () => {
-  it('uses Datamuse and stays deterministic for the day', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => [{ word: 'monorail' }],
-    });
-    vi.stubGlobal('fetch', fetchMock);
+describe('getTargetWord rarity and dictionary contract', () => {
+  it('classifies difficulty by rarity, not word length', async () => {
+    const datamuseWords = [
+      { word: 'extraordinary', tags: ['f:900'] },
+      { word: 'ordinaryword', tags: ['f:500'] },
+      { word: 'caper', tags: ['f:10'] },
+    ];
 
-    const first = await getTargetWord('medium', 'daily');
-    const second = await getTargetWord('medium', 'daily');
+    const dictionaryPayload = (word: string) => [
+      {
+        phonetic: '/test/',
+        phonetics: [{ audio: `https://audio.example/${word}.mp3` }],
+        meanings: [{ definitions: [{ definition: `Definition for ${word}` }] }],
+      },
+    ];
 
-    expect(first).toBe('monorail');
-    expect(second).toBe('monorail');
-    expect(fetchMock).toHaveBeenCalled();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.includes('api.datamuse.com')) {
+          return jsonResponse(datamuseWords);
+        }
+        if (url.includes('api.dictionaryapi.dev')) {
+          const word = decodeURIComponent(url.split('/').pop() ?? '');
+          return jsonResponse(dictionaryPayload(word));
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      }),
+    );
+
+    const easy = await getTargetWord('easy', 'daily');
+    const medium = await getTargetWord('medium', 'daily');
+    const hard = await getTargetWord('hard', 'daily');
+
+    expect(easy.word).toBe('extraordinary');
+    expect(medium.word).toBe('ordinaryword');
+    expect(hard.word).toBe('caper');
+    expect(easy.definition).toContain('extraordinary');
   });
 
-  it('throws when daily API cannot provide a valid word', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+  it('skips words missing dictionary entries and keeps searching', async () => {
+    const datamuseWords = [
+      { word: 'ultracommon', tags: ['f:1000'] },
+      { word: 'stillcommon', tags: ['f:900'] },
+      { word: 'midalpha', tags: ['f:700'] },
+      { word: 'midbeta', tags: ['f:650'] },
+      { word: 'rarealpha', tags: ['f:30'] },
+      { word: 'rarebeta', tags: ['f:20'] },
+    ];
 
-    await expect(getTargetWord('easy', 'daily')).rejects.toThrow(
-      'Unable to fetch a daily word from Datamuse.',
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.includes('api.datamuse.com')) {
+          return jsonResponse(datamuseWords);
+        }
+        if (url.includes('api.dictionaryapi.dev')) {
+          const word = decodeURIComponent(url.split('/').pop() ?? '');
+          if (word === 'ultracommon') {
+            return jsonResponse({ title: 'No Definitions Found' }, 404);
+          }
+          return jsonResponse([
+            {
+              phonetic: '/ok/',
+              phonetics: [{ audio: '' }],
+              meanings: [{ definitions: [{ definition: `Definition for ${word}` }] }],
+            },
+          ]);
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      }),
+    );
+
+    const result = await getTargetWord('easy', 'daily');
+    expect(result.word).toBe('stillcommon');
+    expect(result.definition).toContain('stillcommon');
+  });
+
+  it('throws when no dictionary-backed words can be found', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        if (url.includes('api.datamuse.com')) {
+          return jsonResponse([{ word: 'candidate', tags: ['f:100'] }]);
+        }
+        if (url.includes('api.dictionaryapi.dev')) {
+          return jsonResponse({ title: 'No Definitions Found' }, 404);
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      }),
+    );
+
+    await expect(getTargetWord('easy', 'infinite')).rejects.toThrow(
+      'Unable to fetch an infinite dictionary-backed word.',
     );
   });
-});
 
-describe('getTargetWord (infinite mode)', () => {
-  it('returns a clean API word when Datamuse provides candidates', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => [{ word: 'co-op' }, { word: 'friend' }, { word: 'two words' }],
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    vi.spyOn(Math, 'random').mockReturnValue(0);
-
-    const word = await getTargetWord('easy', 'infinite');
-
-    expect(word).toBe('friend');
-    expect(fetchMock).toHaveBeenCalled();
-  });
-
-  it('throws when infinite API cannot provide a valid word', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
-
-    await expect(getTargetWord('hard', 'infinite')).rejects.toThrow(
-      'Unable to fetch an infinite word from Datamuse.',
-    );
-  });
-
-  it('rethrows AbortError so callers can cancel cleanly', async () => {
+  it('rethrows AbortError to preserve cancellation flow', async () => {
     const abortError = new DOMException('The operation was aborted.', 'AbortError');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(abortError));
 
     await expect(
-      getTargetWord('easy', 'infinite', new AbortController().signal),
+      getTargetWord('easy', 'daily', new AbortController().signal),
     ).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
