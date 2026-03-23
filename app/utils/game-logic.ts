@@ -70,23 +70,34 @@ const shuffleWithRng = <T,>(list: T[], rng: () => number) => {
   return shuffled;
 };
 
-const selectDifficultyBand = (candidates: CandidateWord[], difficulty: Difficulty) => {
+const getDifficultyPools = (candidates: CandidateWord[], difficulty: Difficulty) => {
   const sorted = [...candidates].sort((a, b) => b.frequency - a.frequency);
-  if (sorted.length === 0) return [];
+  if (sorted.length === 0) return [[]];
 
   const n = sorted.length;
   const easyEnd = Math.max(1, Math.ceil(n / 3));
   const mediumStart = Math.floor(n / 3);
   const mediumEnd = Math.max(mediumStart + 1, Math.ceil((2 * n) / 3));
   const hardStart = Math.max(0, Math.floor((2 * n) / 3));
+  const easyRelaxedEnd = Math.max(1, Math.ceil((2 * n) / 3));
+  const mediumRelaxedStart = Math.floor(n / 4);
+  const mediumRelaxedEnd = Math.max(mediumRelaxedStart + 1, Math.ceil((3 * n) / 4));
+  const hardRelaxedStart = Math.floor(n / 2);
 
   const easyBand = sorted.slice(0, easyEnd);
   const mediumBand = sorted.slice(mediumStart, mediumEnd);
   const hardBand = sorted.slice(hardStart);
+  const easyRelaxed = sorted.slice(0, easyRelaxedEnd);
+  const mediumRelaxed = sorted.slice(mediumRelaxedStart, mediumRelaxedEnd);
+  const hardRelaxed = sorted.slice(hardRelaxedStart);
 
-  if (difficulty === 'easy') return easyBand.length > 0 ? easyBand : sorted;
-  if (difficulty === 'medium') return mediumBand.length > 0 ? mediumBand : sorted;
-  return hardBand.length > 0 ? hardBand : sorted;
+  if (difficulty === 'easy') {
+    return [easyBand, easyRelaxed, sorted].filter((pool) => pool.length > 0);
+  }
+  if (difficulty === 'medium') {
+    return [mediumBand, mediumRelaxed, sorted].filter((pool) => pool.length > 0);
+  }
+  return [hardBand, hardRelaxed, sorted].filter((pool) => pool.length > 0);
 };
 
 const getSeededPattern = (seed: string) => {
@@ -190,13 +201,16 @@ const getDailyWord = async (difficulty: Difficulty, signal?: AbortSignal) => {
         ? '*'
         : getSeededPattern(`${seedBase}-pattern-${attempt}`);
     const candidates = await fetchDatamuseCandidates(pattern, signal);
-    const band = selectDifficultyBand(candidates, difficulty);
-    const dailyWord = await chooseDictionaryBackedWord(
-      band,
-      seedrandom(`${seedBase}-pick-${attempt}`),
-      signal,
-    );
-    if (dailyWord) return dailyWord;
+    const pools = getDifficultyPools(candidates, difficulty);
+
+    for (let poolIndex = 0; poolIndex < pools.length; poolIndex++) {
+      const dailyWord = await chooseDictionaryBackedWord(
+        pools[poolIndex],
+        seedrandom(`${seedBase}-pick-${attempt}-${poolIndex}`),
+        signal,
+      );
+      if (dailyWord) return dailyWord;
+    }
   }
 
   throw new Error('Unable to fetch a daily dictionary-backed word.');
@@ -206,9 +220,12 @@ const getInfiniteWord = async (difficulty: Difficulty, signal?: AbortSignal) => 
   for (let attempt = 0; attempt < WORD_FETCH_ATTEMPTS; attempt++) {
     const pattern = attempt >= WORD_FETCH_ATTEMPTS - 2 ? '*' : getRandomPattern();
     const candidates = await fetchDatamuseCandidates(pattern, signal);
-    const band = selectDifficultyBand(candidates, difficulty);
-    const infiniteWord = await chooseDictionaryBackedWord(band, Math.random, signal);
-    if (infiniteWord) return infiniteWord;
+    const pools = getDifficultyPools(candidates, difficulty);
+
+    for (const pool of pools) {
+      const infiniteWord = await chooseDictionaryBackedWord(pool, Math.random, signal);
+      if (infiniteWord) return infiniteWord;
+    }
   }
 
   throw new Error('Unable to fetch an infinite dictionary-backed word.');
